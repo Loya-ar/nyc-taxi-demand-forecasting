@@ -1,0 +1,16 @@
+# Trip data (download from NYC TLC, see data/README.md)
+data/*.parquet
+data/*.csv
+
+# Generated charts and tables
+output/
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
