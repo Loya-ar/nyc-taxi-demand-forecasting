@@ -1,9 +1,9 @@
 # NYC Taxi Ride Demand Forecasting and Revenue Loss Analysis
 # Author: Arjun Loya (INFO6105, Northeastern University)
 #
-# Forecasts hourly NYC yellow-taxi demand with ARIMA, measures forecast accuracy
-# on a held-out week, and simulates revenue lost when overnight driver supply
-# is capped.
+# Forecasts hourly NYC yellow-taxi demand with ARIMA, measures accuracy with
+# rolling 24-hour forecasts against naive baselines, and simulates revenue lost
+# when overnight driver supply is capped.
 #
 # Usage (from the repository root):
 #   Rscript analysis.R                         # reads data/yellow_tripdata_2025-01.parquet
@@ -34,7 +34,7 @@ DATA_FILE    <- if (length(args) >= 1) args[1] else "data/yellow_tripdata_2025-0
 OUTPUT_DIR   <- "output"
 PERIOD_START <- ymd_hms("2025-01-01 00:00:00")  # TLC files contain a few stray timestamps
 PERIOD_END   <- ymd_hms("2025-02-01 00:00:00")  # from other months; keep January only
-HOLDOUT_DAYS <- 7    # last week is held out to measure forecast accuracy
+HOLDOUT_DAYS <-  7   # last 7 days are forecast one day at a time to measure accuracy
 DRIVER_LIMIT <- 50   # simulated overnight capacity, rides per hour
 AVG_FARE     <- 10   # assumed revenue per unserved ride, in dollars
 
@@ -90,29 +90,52 @@ aggregate_hourly_demand <- function(df) {
 }
 
 # ---------------------------------------------------------
-# FUNCTION: Measure Forecast Accuracy on a Held-out Week
+# FUNCTION: Measure Forecast Accuracy (rolling 24-hour forecasts)
 # ---------------------------------------------------------
-# Fits ARIMA on everything except the last week, forecasts that week,
-# and compares the error with a seasonal-naive baseline
-# ("same hour yesterday"). Saves the metrics as a CSV.
+# Rolling-origin test that matches how the forecast is used ("next 24 hours"):
+# for each of the last 7 days, fit on everything before that day and forecast
+# its 24 hours. Compares ARIMA with two naive baselines ("same hour yesterday"
+# and "same hour last week") and an ARIMA with weekly Fourier terms.
+# Saves the average metrics as a CSV.
 evaluate_forecast <- function(df_hourly, holdout_days = HOLDOUT_DAYS) {
-  h <- holdout_days * 24
-  train <- head(df_hourly$rides, -h)
-  test  <- tail(df_hourly$rides, h)
+  y <- df_hourly$rides
+  origins <- length(y) - (holdout_days:1) * 24
 
-  arima_fc <- forecast(auto.arima(ts(train, frequency = 24)), h = h)
-  naive_fc <- snaive(ts(train, frequency = 24), h = h)
-
-  score <- function(fc, name) {
-    err <- test - as.numeric(fc$mean)
-    keep <- test > 0  # MAPE is undefined for zero-ride hours
+  score <- function(pred, actual, name) {
+    err <- actual - pred
+    keep <- actual > 0  # MAPE is undefined for zero-ride hours
     tibble(model = name,
            MAE  = mean(abs(err)),
            RMSE = sqrt(mean(err^2)),
-           MAPE = mean(abs(err[keep]) / test[keep]) * 100)
+           MAPE = mean(abs(err[keep]) / actual[keep]) * 100)
   }
-  metrics <- bind_rows(score(arima_fc, "ARIMA"), score(naive_fc, "Seasonal naive")) %>%
-    mutate(across(c(MAE, RMSE, MAPE), ~ round(.x, 1)))
+
+  daily <- map_dfr(origins, function(o) {
+    train  <- y[1:o]
+    actual <- y[(o + 1):(o + 24)]
+
+    arima_daily <- forecast(auto.arima(ts(train, frequency = 24)), h = 24)$mean
+
+    # Weekly cycle as Fourier regressors; the daily cycle stays in the seasonal ARIMA
+    weekly    <- fourier(msts(train, seasonal.periods = c(24, 168)), K = c(6, 4))
+    weekly_fc <- fourier(msts(train, seasonal.periods = c(24, 168)), K = c(6, 4), h = 24)
+    weekly_cols <- grepl("168", colnames(weekly))
+    arima_weekly <- forecast(
+      auto.arima(ts(train, frequency = 24), xreg = weekly[, weekly_cols]),
+      xreg = weekly_fc[, weekly_cols], h = 24)$mean
+
+    bind_rows(
+      score(as.numeric(arima_daily),  actual, "ARIMA (daily seasonality)"),
+      score(as.numeric(arima_weekly), actual, "ARIMA + weekly Fourier terms"),
+      score(tail(train, 24),           actual, "Naive: same hour yesterday"),
+      score(train[(o - 167):(o - 144)], actual, "Naive: same hour last week"))
+  })
+
+  metrics <- daily %>%
+    group_by(model) %>%
+    summarise(across(c(MAE, RMSE, MAPE), mean), .groups = "drop") %>%
+    mutate(across(c(MAE, RMSE, MAPE), ~ round(.x, 1))) %>%
+    arrange(MAE)
 
   print(metrics)
   write_csv(metrics, file.path(OUTPUT_DIR, "forecast_accuracy.csv"))
@@ -223,7 +246,7 @@ df <- load_and_clean_data(DATA_FILE)
 df_hourly <- aggregate_hourly_demand(df)
 write_csv(df_hourly, file.path(OUTPUT_DIR, "hourly_rides.csv"))
 
-# 3. Measure forecast accuracy on the held-out final week
+# 3. Measure forecast accuracy: rolling 24-hour forecasts over the final week
 evaluate_forecast(df_hourly)
 
 # 4. Create forecast plot
