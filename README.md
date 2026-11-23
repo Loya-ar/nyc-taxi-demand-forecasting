@@ -2,6 +2,8 @@
 
 **Forecasting hourly NYC yellow-taxi demand and estimating revenue lost to overnight driver shortages**, using January 2025 TLC trip records and R.
 
+> **Headline result:** a plain "same hour last week" forecast (MAE 553 rides/hour) beat both ARIMA models (722 and 834). With only one month of data, the weekly pattern is easier to copy than to learn. See [Forecast accuracy](#forecast-accuracy).
+
 The project answers two questions:
 
 1. **Can hourly ride demand be forecast from historical data?** An ARIMA model with 24-hour seasonality is fitted on the hourly ride counts. Its accuracy is measured with rolling 24-hour forecasts over the final week and compared with two simple baselines.
@@ -85,7 +87,7 @@ Rolling 24-hour forecasts over the last 7 days of January:
 | ARIMA, daily seasonality | 834 | 1,175 | 34.7% |
 | Naive: same hour yesterday | 979 | 1,412 | 62.8% |
 
-- ARIMA beats the "same hour yesterday" baseline by about 15% on MAE, so it does learn the daily cycle.
+- Both ARIMA models beat the "same hour yesterday" baseline on MAE: by about 15% for daily seasonality (834 vs 979) and 26% with weekly Fourier terms (722 vs 979). So they do learn the daily cycle.
 - **A plain "same hour last week" forecast beats every model.** Demand has a strong weekly pattern (weekends look very different from weekdays), and one month holds too few weeks for the models to learn it well. Adding weekly Fourier terms helps ARIMA but doesn't close the gap.
 - MAPE is inflated in overnight hours, where a few hundred rides make small errors look large; MAE is the fairer comparison here.
 
